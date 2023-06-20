@@ -49,6 +49,7 @@ parser.add_argument("--io-time-delta", type=int, default=600)
 parser.add_argument("--df-time-delta", type=int, default=600)
 parser.add_argument("--gpu-time-delta", type=int, default=600)
 parser.add_argument("--state-time-delta", type=int, default=60)
+parser.add_argument("--timeout", type=int, default=60)
 args = parser.parse_args()
 
 torrnodes = [
@@ -91,19 +92,19 @@ reference_user = "csbotos"
 SHARED_MOUNTPOINTS = [mountpoint + "/" + reference_user for mountpoint in SHARED_MOUNTPOINTS]
 LOCAL_MOUNTPOINTS = [mountpoint + "/" + reference_user for mountpoint in LOCAL_MOUNTPOINTS]
 
-def gather_gpu_info():
+def gather_gpu_info(tn_users):
     """
     Using torrnode[1-15] check the number of GPUs being used by each user
 
     Return a Counter mapping username to number of GPUs being used
     """
 
-    usage = Counter() 
+    usage = Counter({user: 0 for user in tn_users}) 
     for node in torrnodes:
         node_command = f"ssh {node} gpustat --json"
         logging.debug(f"Running command: {node_command}")
         try:
-            node_output = subprocess.check_output(node_command, shell=True).decode('utf-8')
+            node_output = subprocess.check_output(node_command, shell=True, timeout=args.timeout).decode('utf-8')
             logging.debug(f"Output: {node_output}")
         except subprocess.CalledProcessError:
             logging.warning(f"Couldn't connect to {node}")
@@ -136,7 +137,7 @@ def gather_df_info(convert_to_gb=True):
         node_command = f"ssh {node} df {' '.join(mountpoints)} --output=avail | tail -n +2"
         logging.debug(f"Running command: {node_command}")
         try:
-            node_output = subprocess.check_output(node_command, shell=True).decode('utf-8').strip()
+            node_output = subprocess.check_output(node_command, shell=True, timeout=args.timeout).decode('utf-8').strip()
             logging.debug(f"Output: {node_output}")
             avail = node_output.split("\n")
             if len(avail) != len(mountpoints):
@@ -210,11 +211,11 @@ def gather_io_info():
             read_command = f"ssh {node} dd if={mountpoint}/.test of=/dev/null bs=1M count={num_files} 2>&1 | tail -n 1"
             try:
                 logging.debug(f"Running command: {read_command}")
-                read_output = subprocess.check_output(read_command, shell=True).decode('utf-8').strip()
+                read_output = subprocess.check_output(read_command, shell=True, timeout=args.timeout).decode('utf-8').strip()
                 logging.debug(f"Output: {read_output}")
 
                 logging.debug(f"Running command: {write_command}")
-                write_output = subprocess.check_output(write_command, shell=True).decode('utf-8').strip()
+                write_output = subprocess.check_output(write_command, shell=True, timeout=args.timeout).decode('utf-8').strip()
                 logging.debug(f"Output: {write_output}")
 
                 # parse the output
@@ -290,14 +291,14 @@ def check_state():
         try:
             node_command = f"ssh {node} echo 'online'"
             logging.debug(f"Running command: {node_command}")
-            node_output = subprocess.check_output(node_command, shell=True).decode('utf-8')
+            node_output = subprocess.check_output(node_command, shell=True, timeout=args.timeout).decode('utf-8')
             logging.debug(f"Node {node} responded with {node_output}")
             if node_output.strip() == "online":
-                status[node] = True
+                status[node] = 1
             else:
-                status[node] = False
+                status[node] = 0
         except subprocess.CalledProcessError:
-            status[node] = False
+            status[node] = 0
     
     logging.info("Node status:")
     logging.info(status)
@@ -308,10 +309,10 @@ if __name__ == "__main__":
 
     # list all the users in /homes/53 and /homes/55 through torrnode8
     node_command = f"ssh torrnode8 ls /homes/53"
-    node_output = subprocess.check_output(node_command, shell=True).decode('utf-8')
+    node_output = subprocess.check_output(node_command, shell=True, timeout=args.timeout).decode('utf-8')
     tn_users = node_output.split("\n")[:-1]
     node_command = f"ssh torrnode8 ls /homes/55"
-    node_output = subprocess.check_output(node_command, shell=True).decode('utf-8')
+    node_output = subprocess.check_output(node_command, shell=True, timeout=args.timeout).decode('utf-8')
     tn_users += node_output.split("\n")[:-1]
 
     
@@ -360,7 +361,7 @@ if __name__ == "__main__":
 
             # check the GPU usage
             if time.time() - last_gpu_time > GPU_TIME_DELTA:
-                gpu_usage = gather_gpu_info()
+                gpu_usage = gather_gpu_info(tn_users)
                 wandb.log({"gpu_usage": gpu_usage})
                 last_gpu_time = time.time()
 

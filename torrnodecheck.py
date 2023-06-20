@@ -98,8 +98,8 @@ def gather_gpu_info(tn_users):
 
     Return a Counter mapping username to number of GPUs being used
     """
-
-    usage = Counter({user: 0 for user in tn_users}) 
+    usage = Counter({user: 0 for user in tn_users})
+    free_gpus = Counter({node: 0 for node in torrnodes})
     for node in torrnodes:
         node_command = f"ssh {node} gpustat --json"
         logging.debug(f"Running command: {node_command}")
@@ -111,13 +111,16 @@ def gather_gpu_info(tn_users):
             continue
         stats = json.loads(node_output)
         for gpu in stats["gpus"]:
+            if len(gpu["processes"]) == 0:
+                free_gpus[node] += 1
             for proc in gpu["processes"]:
                 username = proc["username"]
                 usage[username] += 1
 
     logging.info("Result of query:")
     logging.info(f"GPU usage: {usage}")
-    return usage
+    logging.info(f"Free GPUs: {free_gpus}")
+    return usage, free_gpus
 
 
 def gather_df_info(convert_to_gb=True):
@@ -128,7 +131,7 @@ def gather_df_info(convert_to_gb=True):
     """
 
     def run_ssd_command(node, mountpoints):
-        free_space = Counter()
+        free_space = {mountpoint: 0 for mountpoint in mountpoints}
 
         if node not in torrnodes:
             logging.warning(f"{node} is not a valid node")
@@ -196,7 +199,7 @@ def gather_io_info():
     Return a Counter mapping the mountpoint to the average IO speed
     """
     def run_ssd_command(node, mountpoints, num_files=1e3):
-        io_speed = Counter()
+        io_speed = {}
 
         if node not in torrnodes:
             logging.warning(f"{node} is not a valid node")
@@ -247,7 +250,7 @@ def gather_io_info():
 
     # start with torrnode8, and exit as soon as we find a node that's responding
     for i in range(8, 16):
-        io_speeds = Counter()
+        io_speeds = {}
         io_speeds.update(run_ssd_command(f"torrnode{i}", SHARED_MOUNTPOINTS))
         if len(io_speeds) != len(SHARED_MOUNTPOINTS):
             logging.warning(f"torrnode{i} returned {len(io_speeds)} values, expected {len(SHARED_MOUNTPOINTS)}")
@@ -257,12 +260,8 @@ def gather_io_info():
     
     # if we get here, then we have a working node
     # now we can query the rest of the nodes for local storage
-    io_speeds = Counter()
     for node in torrnodes:
-        # update keys with the node id
-        local_io_speeds = run_ssd_command(node, LOCAL_MOUNTPOINTS)
-        for mountpoint in local_io_speeds:
-            io_speeds[f"{node}:{mountpoint}"] = local_io_speeds[mountpoint]
+        io_speeds.update(run_ssd_command(node, LOCAL_MOUNTPOINTS))
 
 
     # remove the reference user from the mountpoints
@@ -291,7 +290,7 @@ def check_state():
         try:
             node_command = f"ssh {node} echo 'online'"
             logging.debug(f"Running command: {node_command}")
-            node_output = subprocess.check_output(node_command, shell=True, timeout=args.timeout).decode('utf-8')
+            node_output = subprocess.check_output(node_command, shell=True, timeout=args.timeout).decode('utf-8').strip()
             logging.debug(f"Node {node} responded with {node_output}")
             if node_output.strip() == "online":
                 status[node] = 1
@@ -304,6 +303,7 @@ def check_state():
     logging.info(status)
     return status
 
+
 if __name__ == "__main__":
     logging.basicConfig(format='%(asctime)s-[%(levelname)s]: %(message)s', level=logging.DEBUG)
 
@@ -312,6 +312,12 @@ if __name__ == "__main__":
     node_output = subprocess.check_output(node_command, shell=True, timeout=args.timeout).decode('utf-8')
     tn_users = node_output.split("\n")[:-1]
     node_command = f"ssh torrnode8 ls /homes/55"
+    node_output = subprocess.check_output(node_command, shell=True, timeout=args.timeout).decode('utf-8')
+    tn_users += node_output.split("\n")[:-1]
+    node_command = f"ssh torrnode8 ls /oldhomes/53"
+    node_output = subprocess.check_output(node_command, shell=True, timeout=args.timeout).decode('utf-8')
+    tn_users += node_output.split("\n")[:-1]
+    node_command = f"ssh torrnode8 ls /oldhomes/55"
     node_output = subprocess.check_output(node_command, shell=True, timeout=args.timeout).decode('utf-8')
     tn_users += node_output.split("\n")[:-1]
 
@@ -351,24 +357,31 @@ if __name__ == "__main__":
             if time.time() - last_io_time > IO_TIME_DELTA:
                 read_speeds, write_speeds = gather_io_info()
                 wandb.log({"read_speeds": read_speeds, "write_speeds": write_speeds})
+                wandb.summary["read_speeds"] = read_speeds
+                wandb.summary["write_speeds"] = write_speeds
                 last_io_time = time.time()
 
             # check the disk usage
             if time.time() - last_df_time > DF_TIME_DELTA:
                 free_space = gather_df_info()
                 wandb.log({"free_space": free_space})
+                wandb.summary["free_space"] = free_space
                 last_df_time = time.time()
 
             # check the GPU usage
             if time.time() - last_gpu_time > GPU_TIME_DELTA:
-                gpu_usage = gather_gpu_info(tn_users)
+                gpu_usage, free_gpus = gather_gpu_info(tn_users)
                 wandb.log({"gpu_usage": gpu_usage})
+                wandb.log({"free_gpus": free_gpus})
+                wandb.summary["gpu_usage"] = gpu_usage
+                wandb.summary["free_gpus"] = free_gpus
                 last_gpu_time = time.time()
 
             # check the state of the nodes
             if time.time() - last_state_time > STATE_TIME_DELTA:
                 node_state = check_state()
                 wandb.log({"node_state": node_state})
+                wandb.summary["node_state"] = node_state
                 last_state_time = time.time()
         finally:
             # sleep for a bit

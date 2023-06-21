@@ -38,7 +38,7 @@ but luckily they are mounted on the same drive, so we will stick to ./53
 import wandb 
 import subprocess 
 import argparse 
-from collections import Counter 
+from collections import Counter, deque
 import time
 import json
 import logging
@@ -50,6 +50,7 @@ parser.add_argument("--df-time-delta", type=int, default=600)
 parser.add_argument("--gpu-time-delta", type=int, default=600)
 parser.add_argument("--state-time-delta", type=int, default=60)
 parser.add_argument("--timeout", type=int, default=60)
+parser.add_argument("--gpu-hours-interval", type=int, default=259200)  # 3 days = 3*24*3600s
 args = parser.parse_args()
 
 torrnodes = [
@@ -350,6 +351,9 @@ if __name__ == "__main__":
     DF_TIME_DELTA = args.df_time_delta
     GPU_TIME_DELTA = args.gpu_time_delta
     STATE_TIME_DELTA = args.state_time_delta
+    GPU_HOURS_INTERVAL = args.gpu_hours_interval
+
+    GPU_hours_queue = {user: [] for user in tn_users}
 
     while True:
         try: 
@@ -371,10 +375,20 @@ if __name__ == "__main__":
             # check the GPU usage
             if time.time() - last_gpu_time > GPU_TIME_DELTA:
                 gpu_usage, free_gpus = gather_gpu_info(tn_users)
+                cur_gpu_hours = {user: gpu_usage[user] * GPU_TIME_DELTA for user in tn_users}
+                cum_gpu_hours = Counter({user: 0 for user in tn_users})
+                for user in tn_users:
+                    if len(GPU_hours_queue[user]) == GPU_HOURS_INTERVAL // GPU_TIME_DELTA:
+                        GPU_hours_queue[user].pop(0)
+                    GPU_hours_queue[user].append(cur_gpu_hours[user])
+                    cum_gpu_hours[user] = sum(GPU_hours_queue[user])
+                        
                 wandb.log({"gpu_usage": gpu_usage})
                 wandb.log({"free_gpus": free_gpus})
+                wandb.log({"gpu_hours_3_days": cum_gpu_hours})
                 wandb.summary["gpu_usage"] = gpu_usage
                 wandb.summary["free_gpus"] = free_gpus
+                wandb.summary["gpu_hours_3_days"] = cum_gpu_hours
                 last_gpu_time = time.time()
 
             # check the state of the nodes

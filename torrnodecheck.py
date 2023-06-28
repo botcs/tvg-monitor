@@ -47,7 +47,7 @@ parser = argparse.ArgumentParser()
 parser.add_argument("--resume-run-id", type=str) 
 parser.add_argument("--io-time-delta", type=int, default=600)
 parser.add_argument("--df-time-delta", type=int, default=600)
-parser.add_argument("--gpu-time-delta", type=int, default=600)
+parser.add_argument("--gpu-time-delta", type=int, default=300)
 parser.add_argument("--state-time-delta", type=int, default=60)
 parser.add_argument("--timeout", type=int, default=60)
 args = parser.parse_args()
@@ -109,8 +109,14 @@ def gather_gpu_info(tn_users):
         except subprocess.CalledProcessError:
             logging.warning(f"Couldn't connect to {node}")
             continue
+        except subprocess.TimeoutExpired:
+            logging.warning(f"Timed out connecting to {node}")
+            continue
         stats = json.loads(node_output)
         for gpu in stats["gpus"]:
+            if gpu["processes"] is None:
+                logging.warning(f"Processes is None for {node} GPU {gpu['index']}")
+                continue
             if len(gpu["processes"]) == 0:
                 free_gpus[node] += 1
             for proc in gpu["processes"]:
@@ -152,6 +158,9 @@ def gather_df_info(convert_to_gb=True):
             return free_space
         except ValueError:
             logging.warning(f"Couldn't parse output from {node}")
+            return free_space
+        except subprocess.TimeoutExpired:
+            logging.warning(f"Timed out connecting to {node}")
             return free_space
 
         for i, mountpoint in enumerate(mountpoints):
@@ -242,6 +251,9 @@ def gather_io_info():
             except ValueError:
                 logging.warning(f"Couldn't parse output from {node}")
                 return io_speed
+            except subprocess.TimeoutExpired:
+                logging.warning(f"Timed out connecting to {node}")
+                return io_speed
             
             io_speed[f"{node}:{mountpoint}"] = (read_speed, write_speed)
 
@@ -298,6 +310,9 @@ def check_state():
                 status[node] = 0
         except subprocess.CalledProcessError:
             status[node] = 0
+        except subprocess.TimeoutExpired:
+            logging.warning(f"Timed out connecting to {node}")
+            continue
     
     logging.info("Node status:")
     logging.info(status)

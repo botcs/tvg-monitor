@@ -22,6 +22,7 @@ if __name__ == "__main__":
     parser.add_argument("script_path", type=str, help="Path to the script to run.")
     parser.add_argument("--user", type=str, required=True, help="User name.")
     parser.add_argument("--gres", default=1, type=int, help="Number of GPUs to request.")
+    parser.add_argument("--time-limit", default=24, type=int, help="Number of hours to request.")
     args = parser.parse_args()
     
     wandb.init(
@@ -33,6 +34,7 @@ if __name__ == "__main__":
             "state": "pending",
             "user": args.user,
             "gres": args.gres,
+            "time_limit": args.time_limit,
             "allocated_node": None,
             "allocated_gpus": None,
         }

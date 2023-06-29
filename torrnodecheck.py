@@ -45,9 +45,9 @@ import logging
 
 parser = argparse.ArgumentParser() 
 parser.add_argument("--resume-run-id", type=str) 
-parser.add_argument("--io-time-delta", type=int, default=600)
-parser.add_argument("--df-time-delta", type=int, default=600)
-parser.add_argument("--gpu-time-delta", type=int, default=300)
+parser.add_argument("--io-time-delta", type=int, default=1800)
+parser.add_argument("--df-time-delta", type=int, default=3600)
+parser.add_argument("--gpu-time-delta", type=int, default=60)
 parser.add_argument("--state-time-delta", type=int, default=60)
 parser.add_argument("--timeout", type=int, default=60)
 args = parser.parse_args()
@@ -100,6 +100,7 @@ def gather_gpu_info(tn_users):
     """
     usage = Counter({user: 0 for user in tn_users})
     free_gpus = Counter({node: 0 for node in torrnodes})
+    free_gpu_ids = {node: [] for node in torrnodes}
     for node in torrnodes:
         node_command = f"ssh {node} gpustat --json"
         logging.debug(f"Running command: {node_command}")
@@ -119,14 +120,17 @@ def gather_gpu_info(tn_users):
                 continue
             if len(gpu["processes"]) == 0:
                 free_gpus[node] += 1
-            for proc in gpu["processes"]:
-                username = proc["username"]
-                usage[username] += 1
+                free_gpu_ids[node].append(gpu["index"])
+            else:
+                for proc in gpu["processes"]:
+                    username = proc["username"]
+                    usage[username] += 1
 
     logging.info("Result of query:")
     logging.info(f"GPU usage: {usage}")
     logging.info(f"Free GPUs: {free_gpus}")
-    return usage, free_gpus
+    logging.info(f"Free GPU IDs: {free_gpu_ids}")
+    return usage, free_gpus, free_gpu_ids
 
 
 def gather_df_info(convert_to_gb=True):
@@ -368,28 +372,18 @@ if __name__ == "__main__":
 
     while True:
         try: 
-            # check the IO speed
-            if time.time() - last_io_time > IO_TIME_DELTA:
-                read_speeds, write_speeds = gather_io_info()
-                wandb.log({"read_speeds": read_speeds, "write_speeds": write_speeds})
-                wandb.summary["read_speeds"] = read_speeds
-                wandb.summary["write_speeds"] = write_speeds
-                last_io_time = time.time()
-
-            # check the disk usage
-            if time.time() - last_df_time > DF_TIME_DELTA:
-                free_space = gather_df_info()
-                wandb.log({"free_space": free_space})
-                wandb.summary["free_space"] = free_space
-                last_df_time = time.time()
+            # This should be done asynchronusly in the future
+            # but for now, we'll just do it sequentially
 
             # check the GPU usage
             if time.time() - last_gpu_time > GPU_TIME_DELTA:
-                gpu_usage, free_gpus = gather_gpu_info(tn_users)
+                gpu_usage, free_gpus, free_gpu_ids = gather_gpu_info(tn_users)
                 wandb.log({"gpu_usage": gpu_usage})
                 wandb.log({"free_gpus": free_gpus})
+                wandb.log({"free_gpu_ids": free_gpu_ids})
                 wandb.summary["gpu_usage"] = gpu_usage
                 wandb.summary["free_gpus"] = free_gpus
+                wandb.summary["free_gpu_ids"] = free_gpu_ids
                 last_gpu_time = time.time()
 
             # check the state of the nodes
@@ -398,6 +392,22 @@ if __name__ == "__main__":
                 wandb.log({"node_state": node_state})
                 wandb.summary["node_state"] = node_state
                 last_state_time = time.time()
+
+            # check the disk usage
+            if time.time() - last_df_time > DF_TIME_DELTA:
+                free_space = gather_df_info()
+                wandb.log({"free_space": free_space})
+                wandb.summary["free_space"] = free_space
+                last_df_time = time.time()
+
+            # check the IO speed
+            if time.time() - last_io_time > IO_TIME_DELTA:
+                read_speeds, write_speeds = gather_io_info()
+                wandb.log({"read_speeds": read_speeds, "write_speeds": write_speeds})
+                wandb.summary["read_speeds"] = read_speeds
+                wandb.summary["write_speeds"] = write_speeds
+                last_io_time = time.time()
+   
         finally:
             # sleep for a bit
             time.sleep(10)
